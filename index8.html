@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Map 3D Congo.cg- Navigation Professionnelle</title>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: Arial; }
+    #ui {
+      position: absolute; top: 10px; left: 10px;
+      background: rgba(0,0,0,0.6); color: white;
+      padding: 15px; border-radius: 5px; z-index: 100;
+      width: 320px;
+      backdrop-filter: blur(5px);
+    }
+    #stats { position: absolute; top: 10px; right: 10px; }
+    .control-group { margin-bottom: 15px; }
+    button, input, select { width: 100%; margin: 5px 0; }
+    #cameraInfo {
+      font-family: monospace;
+      background: rgba(0,0,0,0.5);
+      padding: 8px;
+      border-radius: 4px;
+    }
+    .slider-container { display: flex; align-items: center; }
+    .slider-container input[type="range"] { flex-grow: 1; margin: 0 10px; }
+    .value-display { width: 40px; text-align: right; }
+
+    canvas{
+      display:none;
+    }
+  </style>
+</head>
+<body>
+<div id="ui">
+  <h2>Map 3D Congo.cg</h2>
+
+  <div class="control-group">
+    <input type="file" id="fileInput" accept=".glb,.gltf" />
+    <div class="slider-container">
+      <span>Zoom:</span>
+      <input type="range" id="zoomControl" min="-5" max="5" step="0.1" value="0">
+      <span class="value-display" id="zoomValue">1.0x</span>
+    </div>
+    <button id="toggleModeBtn">🔘 Mode Vol (OFF)</button>
+  </div>
+
+  <div class="control-group">
+    <h3>Position Caméra</h3>
+    <div id="cameraInfo">X: 0.00, Y: 0.00, Z: 5.00</div>
+    <div class="slider-container">
+      <span>X:</span>
+      <input type="range" id="posX" min="-50" max="50" step="0.1" value="0">
+      <span class="value-display" id="posXValue">0.0</span>
+    </div>
+    <div class="slider-container">
+      <span>Y:</span>
+      <input type="range" id="posY" min="-50" max="50" step="0.1" value="0">
+      <span class="value-display" id="posYValue">0.0</span>
+    </div>
+    <div class="slider-container">
+      <span>Z:</span>
+      <input type="range" id="posZ" min="-50" max="50" step="0.1" value="5">
+      <span class="value-display" id="posZValue">5.0</span>
+    </div>
+    <button id="savePosBtn">💾 Sauvegarder Position</button>
+    <button id="loadPosBtn">📂 Charger Position</button>
+    <button id="rotate90Btn" style="display: none">🔄 Rotation 90°</button>
+  </div>
+
+  <div class="control-group">
+    <h3>Paramètres Avancés</h3>
+    <div class="slider-container">
+      <span>Vitesse:</span>
+      <input type="range" id="speedControl" min="0.1" max="10" step="0.1" value="1">
+      <span class="value-display" id="speedValue">1.0</span>
+    </div>
+    <div class="slider-container">
+      <span>Position Soleil:</span>
+      <input type="range" id="sunPosition" min="0" max="360" step="1" value="45">
+      <span class="value-display" id="sunValue">45°</span>
+    </div>
+    <button id="fitViewBtn">🎯 Centrer la Vue</button>
+  </div>
+  <div>
+    <p style="text-align:right;margin-top: 10px">Developé par <a href="https://www.facebook.com/KOTech242" target="_blank" style="text-decoration: none">KOTech</a></p>
+  </div>
+</div>
+
+<div id="stats"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/FlyControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/libs/stats.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.11.4/gsap.min.js"></script>
+
+<script>
+  // 1. Initialisation
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x222222);
+
+  const camera = new THREE.PerspectiveCamera(
+          50, window.innerWidth / window.innerHeight,
+          0.0001, 100000
+  );
+  camera.position.set(0, 0, 5);
+
+  const renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    powerPreference: "high-performance",
+    logarithmicDepthBuffer: true,
+    precision: "highp"
+  });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.physicallyCorrectLights = true;
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  // 2. Éclairage avec contrôle du soleil
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+  scene.add(ambientLight);
+
+  const sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
+  sunLight.position.set(1, 1, 1);
+  sunLight.castShadow = true;
+  scene.add(sunLight);
+
+  const sunHelper = new THREE.DirectionalLightHelper(sunLight, 0.5);
+  scene.add(sunHelper);
+
+  // 3. Contrôles
+  let orbitControls, flyControls;
+  let currentControls;
+  let isFlyMode = false;
+  let targetZoom = 1;
+  let currentSpeed = 1;
+  const savedPositions = [];
+  const raycaster = new THREE.Raycaster();
+  const mouse = new THREE.Vector2();
+  let currentModel = null;
+
+  function initControls() {
+    orbitControls = new THREE.OrbitControls(camera, renderer.domElement);
+    orbitControls.enableDamping = true;
+    orbitControls.dampingFactor = 0.05;
+    orbitControls.minDistance = 0.0001;
+    orbitControls.maxDistance = 10000;
+    orbitControls.screenSpacePanning = true;
+
+    flyControls = new THREE.FlyControls(camera, renderer.domElement);
+    flyControls.movementSpeed = currentSpeed;
+    flyControls.rollSpeed = 0.1;
+    flyControls.dragToLook = false;
+    flyControls.autoForward = false;
+
+    currentControls = orbitControls;
+
+    // Gestion du double-clic sur le renderer
+    renderer.domElement.addEventListener('dblclick', (event) => {
+      if (!currentModel || isFlyMode) return;
+
+      // Calcul des coordonnées normalisées de la souris
+      mouse.x = (event.clientX / renderer.domElement.clientWidth) * 2 - 1;
+      mouse.y = - (event.clientY / renderer.domElement.clientHeight) * 2 + 1;
+
+      // Raycasting
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObject(currentModel, true);
+
+      if (intersects.length > 0) {
+        const point = intersects[0].point;
+        zoomToPoint(point);
+      }
+    });
+  }
+  initControls();
+
+  // 4. Fonctions pour les nouvelles fonctionnalités
+  function zoomToPoint(point) {
+    const targetPosition = new THREE.Vector3();
+    targetPosition.copy(point);
+
+    // Calcul de la nouvelle position de la caméra (reculer un peu)
+    const direction = new THREE.Vector3().subVectors(camera.position, point).normalize();
+    const distance = camera.position.distanceTo(point) * 0.5;
+    targetPosition.add(direction.multiplyScalar(distance));
+
+    // Animation avec GSAP
+    gsap.to(camera.position, {
+      x: targetPosition.x,
+      y: targetPosition.y,
+      z: targetPosition.z,
+      duration: 1,
+      ease: "power2.out",
+      onUpdate: () => {
+        orbitControls.target.copy(point);
+        orbitControls.update();
+      }
+    });
+  }
+
+  function rotateCamera90Degrees() {
+    // Rotation autour de l'axe Y (vertical)
+    const newRotation = camera.rotation.y + Math.PI / 2;
+
+    gsap.to(camera.rotation, {
+      y: newRotation,
+      duration: 0.5,
+      ease: "power2.inOut",
+      onUpdate: () => {
+        orbitControls.update();
+      }
+    });
+  }
+
+  function updateSunPosition(angle) {
+    const rad = THREE.MathUtils.degToRad(angle);
+    const x = Math.cos(rad) * 10;
+    const z = Math.sin(rad) * 10;
+
+    sunLight.position.set(x, 10, z);
+    sunHelper.update();
+  }
+
+  // 5. Fonctions principales
+  function loadModel(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const url = URL.createObjectURL(file);
+    const loader = new THREE.GLTFLoader();
+
+    loader.load(url, (gltf) => {
+      if (currentModel) scene.remove(currentModel);
+
+      currentModel = gltf.scene;
+      scene.add(currentModel);
+
+      fitModelToView();
+      if (isFlyMode) flyControls.movementSpeed = currentSpeed * getModelSize();
+
+    }, undefined, (error) => {
+      console.error("Erreur de chargement:", error);
+      alert("Erreur de chargement du modèle. Voir la console pour les détails.");
+    });
+  }
+
+  function toggleMode() {
+    isFlyMode = !isFlyMode;
+
+    if (isFlyMode) {
+      currentControls = flyControls;
+      flyControls.movementSpeed = currentSpeed * (currentModel ? getModelSize() : 1);
+      document.getElementById('toggleModeBtn').textContent = "✈️ Mode Vol (ON)";
+    } else {
+      currentControls = orbitControls;
+      document.getElementById('toggleModeBtn').textContent = "🔘 Mode Vol (OFF)";
+    }
+  }
+
+  function getModelSize() {
+    if (!currentModel) return 1;
+    const box = new THREE.Box3().setFromObject(currentModel);
+    return box.getSize(new THREE.Vector3()).length();
+  }
+
+  function fitModelToView() {
+    if (!currentModel) return;
+
+    const box = new THREE.Box3().setFromObject(currentModel);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3()).length();
+
+    camera.position.copy(center);
+    camera.position.z += size * 1.5;
+
+    if (currentControls === orbitControls) {
+      orbitControls.target.copy(center);
+      orbitControls.update();
+    }
+
+    targetZoom = 1;
+    document.getElementById('zoomControl').value = 0;
+    document.getElementById('zoomValue').textContent = "1.0x";
+
+    updateCameraUI();
+  }
+
+  function updateCameraFromUI() {
+    const x = parseFloat(document.getElementById('posX').value);
+    const y = parseFloat(document.getElementById('posY').value);
+    const z = parseFloat(document.getElementById('posZ').value);
+
+    camera.position.set(x, y, z);
+    updateCameraInfo();
+  }
+
+  function updateCameraUI() {
+    document.getElementById('posX').value = camera.position.x;
+    document.getElementById('posY').value = camera.position.y;
+    document.getElementById('posZ').value = camera.position.z;
+
+    document.getElementById('posXValue').textContent = camera.position.x.toFixed(1);
+    document.getElementById('posYValue').textContent = camera.position.y.toFixed(1);
+    document.getElementById('posZValue').textContent = camera.position.z.toFixed(1);
+
+    updateCameraInfo();
+  }
+
+  function updateCameraInfo() {
+    document.getElementById('cameraInfo').textContent =
+            `X: ${camera.position.x.toFixed(2)}, Y: ${camera.position.y.toFixed(2)}, Z: ${camera.position.z.toFixed(2)}`;
+  }
+
+  function saveCameraPosition() {
+    savedPositions.push({
+      x: camera.position.x,
+      y: camera.position.y,
+      z: camera.position.z,
+      zoom: targetZoom
+    });
+    alert(`Position #${savedPositions.length} sauvegardée`);
+  }
+
+  function loadCameraPosition() {
+    if (savedPositions.length === 0) return;
+    const pos = savedPositions[savedPositions.length - 1];
+
+    camera.position.set(pos.x, pos.y, pos.z);
+    targetZoom = pos.zoom;
+
+    document.getElementById('zoomControl').value = Math.log2(pos.zoom);
+    document.getElementById('zoomValue').textContent = pos.zoom.toFixed(1) + 'x';
+
+    updateCameraUI();
+  }
+
+  // 6. Gestion des événements UI
+  document.getElementById('fileInput').addEventListener('change', loadModel);
+  document.getElementById('toggleModeBtn').addEventListener('click', toggleMode);
+  document.getElementById('fitViewBtn').addEventListener('click', fitModelToView);
+  document.getElementById('savePosBtn').addEventListener('click', saveCameraPosition);
+  document.getElementById('loadPosBtn').addEventListener('click', loadCameraPosition);
+  document.getElementById('rotate90Btn').addEventListener('click', rotateCamera90Degrees);
+  document.getElementById('sunPosition').addEventListener('input', function(e) {
+    const angle = parseInt(e.target.value);
+    document.getElementById('sunValue').textContent = angle + '°';
+    updateSunPosition(angle);
+  });
+
+  document.getElementById('zoomControl').addEventListener('input', function(e) {
+    targetZoom = Math.pow(2, e.target.value);
+    document.getElementById('zoomValue').textContent = targetZoom.toFixed(1) + 'x';
+  });
+
+  document.getElementById('speedControl').addEventListener('input', function(e) {
+    currentSpeed = parseFloat(e.target.value);
+    document.getElementById('speedValue').textContent = currentSpeed.toFixed(1);
+    if (isFlyMode) flyControls.movementSpeed = currentSpeed;
+  });
+
+  // 7. Animation
+  const stats = new Stats();
+  document.getElementById('stats').appendChild(stats.dom);
+  const clock = new THREE.Clock();
+
+  function animate() {
+    requestAnimationFrame(animate);
+    const delta = clock.getDelta();
+
+    if (!isFlyMode) {
+      camera.zoom = THREE.MathUtils.lerp(camera.zoom, targetZoom, 0.1);
+      camera.updateProjectionMatrix();
+    }
+
+    if (isFlyMode) {
+      flyControls.update(delta);
+    } else {
+      orbitControls.update();
+    }
+
+    updateCameraInfo();
+    renderer.render(scene, camera);
+    stats.update();
+  }
+  animate();
+
+  // 8. Initialisation
+  updateSunPosition(45);
+  updateCameraUI();
+</script>
+</body>
+</html>
